@@ -1,0 +1,230 @@
+---
+title: "COVID 19 Forecast"
+author: ''
+date: "2022-08-01"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Problem
+In this report, the goal of this report is to try and forecast future cases of confirmed COVID Cases in the US. 
+
+### Packages 
+ * tidyverse
+ * lubridate
+ * prophet
+```{r package_loading, message=FALSE, echo=FALSE}
+install.packages("tidyverse")
+install.packages("lubridate")
+install.packages("prophet")
+
+library(tidyverse)
+library(lubridate)
+library(prophet)
+```
+
+### Loading Data
+Data was from John Hopkins University GitHub.
+The main data used was the time series on confirmed COVID cases in the US from 2020 up till the generation of this report, Aug 1, 2022.
+```{r import_data, message=FALSE}
+# Creating the URLs
+url_base <- 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/'
+file_names <- c(
+  'time_series_covid19_confirmed_US.csv',
+  'time_series_covid19_deaths_US.csv'
+)
+urls <- str_c(url_base,file_names)
+
+# Note: Ran as of Aug 1, 2022. The data will continue to update
+us_cases <- read_csv(urls[1])
+us_deaths <- read_csv(urls[2])
+```
+
+### Tidying/Transforming 
+```{r tidy_data, message=FALSE}
+# US Data 
+col_names <- c('UID','iso2','iso3','code3','FIPS','Admin2','Province_State','Country_Region','Lat','Long_','Combined_Key')
+us_cases <- us_cases %>% 
+  pivot_longer(
+    cols=-col_names,
+    names_to='date',
+    values_to='cases'
+  )
+col_names <- c('UID','iso2','iso3','code3','FIPS','Admin2','Province_State','Country_Region','Lat','Long_','Combined_Key','Population')
+us_deaths <- us_deaths %>% 
+  pivot_longer(
+    cols=-col_names,
+    names_to='date',
+    values_to='deaths'
+  )
+
+us <- us_cases %>% 
+  full_join(us_deaths) %>% 
+  mutate(date=mdy(date))
+
+us <- us %>% 
+  mutate(
+    new_cases=(cases-lag(cases))
+    )
+  
+```
+
+### Visualization 1
+We first look at the trend of COVID trend over time in the US
+```{r visualization, message=FALSE}
+covid_trend <- us %>% 
+  group_by(date) %>% 
+  summarise(cases=sum(cases))
+gg_base <- ggplot(
+  covid_trend %>% mutate(cases=cases/1000),
+  aes(x=date,y=cases)
+)
+gg_base + 
+  geom_line() +
+  labs(
+    x='Date',
+    y='Cases (Thousands)',
+    title='US COVID 19',
+    subtitle = 'Confirmed Cases'
+  )
+```
+We can see from the above chart, COVID 19 confirmed cases continually increases.
+
+Let us see what the daily trend in new cases look like
+```{r new_case_trend, message=FALSE}
+new_cases_trend <- covid_trend %>% 
+  mutate(
+    new_cases = cases-lag(cases)
+  )
+gg_base <- ggplot(
+  new_cases_trend %>% mutate(new_cases=new_cases/1000),
+  aes(x=date,y=new_cases)
+)
+gg_base + 
+  geom_line() +
+  labs(
+    x='Date',
+    y='New Cases (Thousands)',
+    title='US COVID 19',
+    subtitle = 'Confirmed Cases'
+  )
+```
+From the above we can see, new cases is roughly similar to what it was at the end of 2020. 
+
+Next are there certain days of the week in which we see more new cases? 
+```{r visualization_02, message=FALSE}
+new_cases_trend <- new_cases_trend %>% 
+  mutate(day=weekdays(date))
+gg_base <- ggplot(
+  new_cases_trend %>% mutate(new_cases=new_cases/1000),
+  aes(x=day,y=new_cases)
+)
+gg_base +
+  geom_boxplot() + 
+  ylim(0,300) +
+  labs(
+    x='Day',
+    y='New Cases (Thousands)',
+    title='Boxplot of New Cases by Day of Week'
+  )
+```
+From the above, most days looks to have roughly the first, third quartiles and the median are roughly the same for all the days with the exception of the weekends. Likely this is from a lack of reporting on the weekends whether due shorter testing COVID testing hours at centres or from people being less willing to get tested on weekends. 
+Given we see the effect of weekends on the data, this leads to the next question, does new case count get affected on holidays as well? To study this we look at US federal holidays from 2020. For days falling on weekends, we look at the observed date of the holidays. As well, given weekends are skewed, we exclude weekends in this analysis.
+```{r holiday, message=FALSE}
+us_holidays <- c(
+  '2020/1/1',
+  '2020/1/20',
+  '2020/2/17',
+  '2020/5/25',
+  '2020/7/3',
+  '2020/9/7',
+  '2020/10/12',
+  '2020/11/11',
+  '2020/11/26',
+  '2020/12/24',
+  '2020/12/25',
+  '2021/1/1',
+  '2021/1/18',
+  '2021/2/15',
+  '2021/5/31',
+  '2021/6/18',
+  '2021/7/4',
+  '2021/9/6',
+  '2021/10/11',
+  '2021/11/11',
+  '2021/12/23',
+  '2021/12/24',
+  '2021/12/31',
+  '2022/1/1',
+  '2022/1/17',
+  '2022/5/30',
+  '2022/6/20',
+  '2022/7/4',
+  '2022/9/5',
+  '2022/10/10',
+  '2022/11/11',
+  '2022/12/26'
+)
+check_holiday <- function(d) {
+  result = d %in% ymd(us_holidays)
+  return(result)
+}
+new_cases_trend <- new_cases_trend %>% 
+  mutate(holiday=check_holiday(new_cases_trend$date)) %>% 
+  filter(!(new_cases_trend$day %in% c('Saturday','Sunday')))
+
+# Visualization
+gg_base <- ggplot(
+  new_cases_trend %>% mutate(new_cases=new_cases/1000),
+  aes(x=holiday,y=new_cases)
+)
+gg_base +
+  geom_boxplot() + 
+  ylim(0,300) +
+  labs(
+    x="Holiday Indicator",
+    y="New Cases",
+    title="Boxplot of New Cases by Holidays"
+  )
+```
+From the above boxplots we can see there isn't a significant different in the quartiles of the plots. 
+
+Are there any seasonal trend in the data? 
+```{r seasonal_component, message=FALSE}
+decom <- stl(ts(covid_trend$cases, frequency=365), s.window='periodic')
+plot(decom)
+```
+From the above chart, we can see a decent seasonal component. The remainder component does not appear to be random indicating there could be more than variables than just the trend and seasonality alone. 
+### Model
+We will now attempt to forecast case trend for the next year using a time series model. Specifically, using Prophet
+```{r model, message=FALSE}
+# prophet needs proper column names 
+data <- covid_trend %>% mutate(cases=cases/1000) %>% rename(ds='date',y='cases') 
+
+# We don't adjust for holidays given we don't see a large effect from holidays 
+model <- prophet(data)
+future <- make_future_dataframe(model, periods = 365)
+forecast <- predict(model, future)
+
+gg_base <- plot(model,forecast)
+gg_base +
+  labs(
+    x='Dates',
+    y='Confirmed Cases (Thousands)',
+    title='One Year COVID Cases Forecast'
+  )
+
+```
+Projection for confirmed COVID cases in the US in a year is about 140,000 thousand.
+
+### Discussion, Biases and Conclusions
+From the above analysis, we can see that weekends typically had less confirmed cases, holidays had little effects on the confirmed cases, there appeared to be a seasonal component and a positive trend to the confirmed COVID case counts in the US. 
+
+In further research, there should be an investigation into the remainder component after decomposing the COVID cases over time into its trend and seasonal component. As well if the effects of holidays may have a potential lag and affect the new case count up to three weeks after the holidays.
+
+As well biases should also be accounted for. Any bias in collecting the data, whether that be from citizens opting not to get diagnosed or COVID centres' staff being unable to report on confirmed cases on time, these would all affect the output of the model. As well the decision on the model used and the fitting of it may also contain bias. The decision to keep outliers was due to the assumption that the outliers were meaningful, when this could be from data collection error, human error (typo), etc. 
